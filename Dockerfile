@@ -1,29 +1,46 @@
-# Build stage
+# ---------------------------
+# 🏗️  Build stage
+# ---------------------------
 FROM node:20-alpine AS builder
 
+# Definir diretório de trabalho
 WORKDIR /app
 
-# Copy package files
+# Copiar arquivos de dependências
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install --frozen-lockfile || npm install
+# Declarar as variáveis de ambiente que virão do Easypanel
+# (elas são passadas via --build-arg automaticamente)
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_ANON_KEY
 
-# Copy source code
+# Tornar as variáveis disponíveis no ambiente de build
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+
+# Instalar dependências (usando cache inteligente)
+RUN npm ci || npm install
+
+# Copiar o restante dos arquivos do projeto
 COPY . .
 
-# Build the app
+# Compilar o app com as variáveis de ambiente
 RUN npm run build
 
-# Production stage
+
+# ---------------------------
+# 🚀  Production stage
+# ---------------------------
 FROM nginx:alpine
 
-# Copy built files to nginx
+# Copiar os arquivos gerados pelo build para o diretório público do Nginx
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy nginx config
+# Copiar configuração customizada do Nginx (caso exista)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Expor a porta padrão do Nginx
 EXPOSE 80
 
+# Rodar o servidor Nginx
 CMD ["nginx", "-g", "daemon off;"]
