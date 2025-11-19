@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/hooks/use-toast';
-import { ArrowLeft, Send, Save, TestTube } from 'lucide-react';
+import { ArrowLeft, Send, Save, TestTube, Upload, X, Image, File } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -21,13 +21,20 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   
   const [formData, setFormData] = useState({
     nome: '',
     mensagem: '',
     data: '',
     hora: '',
+    mediaUrl: '', // URL da mídia após upload
+    mediaType: '', // image, video, audio, document
+    mediaCaption: '', // Legenda da mídia
   });
+
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<string>('');
 
   useEffect(() => {
     if (editingId) {
@@ -54,7 +61,14 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
           mensagem: data.mensagem,
           data: data.data_agendamento,
           hora: data.hora_agendamento,
+          mediaUrl: data.media_url || '',
+          mediaType: data.media_type || '',
+          mediaCaption: data.media_caption || '',
         });
+
+        if (data.media_url) {
+          setMediaPreview(data.media_url);
+        }
       }
     } catch (error) {
       console.error('Erro ao carregar disparo:', error);
@@ -66,10 +80,78 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
     }
   };
 
+  const handleMediaSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validar tamanho (max 16MB)
+    if (file.size > 16 * 1024 * 1024) {
+      toast({
+        title: "Arquivo muito grande",
+        description: "O arquivo deve ter no máximo 16MB.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setMediaFile(file);
+
+    // Detectar tipo de mídia
+    let mediaType = '';
+    if (file.type.startsWith('image/')) mediaType = 'image';
+    else if (file.type.startsWith('video/')) mediaType = 'video';
+    else if (file.type.startsWith('audio/')) mediaType = 'audio';
+    else mediaType = 'document';
+
+    setFormData(prev => ({ ...prev, mediaType }));
+
+    // Preview para imagens
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setMediaPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setMediaPreview('');
+    }
+  };
+
+  const uploadMediaToSupabase = async (file: File): Promise<string> => {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${user?.id}/${Date.now()}.${fileExt}`;
+
+    const { data, error } = await supabase.storage
+      .from('media-disparos')
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (error) throw error;
+
+    const { data: urlData } = supabase.storage
+      .from('media-disparos')
+      .getPublicUrl(fileName);
+
+    return urlData.publicUrl;
+  };
+
+  const handleRemoveMedia = () => {
+    setMediaFile(null);
+    setMediaPreview('');
+    setFormData(prev => ({
+      ...prev,
+      mediaUrl: '',
+      mediaType: '',
+      mediaCaption: '',
+    }));
+  };
+
   const enviarWebhook = async (tipo: 'teste' | 'producao', disparoId: string) => {
     const timestamp = new Date(`${formData.data}T${formData.hora}:00`).toISOString();
     
-    const payload = {
+    const payload: any = {
       tipo,
       disparo_id: disparoId,
       nome: formData.nome,
@@ -77,8 +159,18 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       data: formData.data,
       hora: formData.hora,
       timestamp,
+      tem_media: !!formData.mediaUrl, // ✅ Flag para n8n decidir o caminho
       ...(tipo === 'teste' && { grupo_teste: GRUPO_TESTE })
     };
+
+    // ✅ Adicionar dados de mídia se existir
+    if (formData.mediaUrl) {
+      payload.media = {
+        url: formData.mediaUrl,
+        type: formData.mediaType,
+        caption: formData.mediaCaption || formData.mensagem,
+      };
+    }
 
     console.log('📤 Enviando para webhook:', payload);
 
@@ -92,7 +184,6 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       });
 
       if (!response.ok) {
-        // Tenta com no-cors como fallback
         await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: {
@@ -132,6 +223,15 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
     setTestLoading(true);
 
     try {
+      // Upload da mídia se houver
+      let mediaUrl = formData.mediaUrl;
+      if (mediaFile && !mediaUrl) {
+        setUploadingMedia(true);
+        mediaUrl = await uploadMediaToSupabase(mediaFile);
+        setFormData(prev => ({ ...prev, mediaUrl }));
+        setUploadingMedia(false);
+      }
+
       // Salva como rascunho se ainda não existe
       let disparoId = editingId;
       
@@ -144,7 +244,10 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             mensagem: formData.mensagem,
             data_agendamento: formData.data || new Date().toISOString().split('T')[0],
             hora_agendamento: formData.hora || '12:00',
-            status: 'rascunho'
+            status: 'rascunho',
+            media_url: mediaUrl || null,
+            media_type: formData.mediaType || null,
+            media_caption: formData.mediaCaption || null,
           })
           .select()
           .single();
@@ -153,13 +256,18 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
         disparoId = data.id;
       }
 
+      // Atualizar formData com a URL da mídia
+      if (mediaUrl) {
+        setFormData(prev => ({ ...prev, mediaUrl }));
+      }
+
       // Envia para o webhook como teste
       const success = await enviarWebhook('teste', disparoId!);
 
       if (success) {
         toast({
           title: "✅ Teste enviado!",
-          description: `Mensagem enviada para o grupo de teste. Verifique o n8n!`,
+          description: `Mensagem${mediaUrl ? ' com mídia' : ''} enviada para o grupo de teste.`,
         });
       } else {
         toast({
@@ -176,6 +284,7 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       });
     } finally {
       setTestLoading(false);
+      setUploadingMedia(false);
     }
   };
 
@@ -201,11 +310,18 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
     setLoading(true);
 
     try {
+      // Upload da mídia se houver
+      let mediaUrl = formData.mediaUrl;
+      if (mediaFile && !mediaUrl) {
+        setUploadingMedia(true);
+        mediaUrl = await uploadMediaToSupabase(mediaFile);
+        setUploadingMedia(false);
+      }
+
       const dataAgendamento = formData.data || new Date().toISOString().split('T')[0];
       const horaAgendamento = formData.hora || '12:00';
 
       if (editingId) {
-        // Atualizar
         const { error } = await supabase
           .from('disparos')
           .update({
@@ -213,6 +329,9 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             mensagem: formData.mensagem,
             data_agendamento: dataAgendamento,
             hora_agendamento: horaAgendamento,
+            media_url: mediaUrl || null,
+            media_type: formData.mediaType || null,
+            media_caption: formData.mediaCaption || null,
           })
           .eq('id', editingId)
           .eq('user_id', user.id);
@@ -224,7 +343,6 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
           description: "Suas alterações foram salvas.",
         });
       } else {
-        // Criar novo
         const { error } = await supabase
           .from('disparos')
           .insert({
@@ -233,7 +351,10 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             mensagem: formData.mensagem,
             data_agendamento: dataAgendamento,
             hora_agendamento: horaAgendamento,
-            status: 'rascunho'
+            status: 'rascunho',
+            media_url: mediaUrl || null,
+            media_type: formData.mediaType || null,
+            media_caption: formData.mediaCaption || null,
           });
 
         if (error) throw error;
@@ -254,6 +375,7 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       });
     } finally {
       setLoading(false);
+      setUploadingMedia(false);
     }
   };
 
@@ -277,7 +399,6 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       return;
     }
 
-    // Validar data futura
     const dataHoraAgendamento = new Date(`${formData.data}T${formData.hora}:00`);
     if (dataHoraAgendamento <= new Date()) {
       toast({
@@ -291,10 +412,17 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
     setLoading(true);
 
     try {
+      // Upload da mídia se houver
+      let mediaUrl = formData.mediaUrl;
+      if (mediaFile && !mediaUrl) {
+        setUploadingMedia(true);
+        mediaUrl = await uploadMediaToSupabase(mediaFile);
+        setUploadingMedia(false);
+      }
+
       let disparoId = editingId;
 
       if (editingId) {
-        // Atualizar existente
         const { error } = await supabase
           .from('disparos')
           .update({
@@ -302,14 +430,16 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             mensagem: formData.mensagem,
             data_agendamento: formData.data,
             hora_agendamento: formData.hora,
-            status: 'agendado'
+            status: 'agendado',
+            media_url: mediaUrl || null,
+            media_type: formData.mediaType || null,
+            media_caption: formData.mediaCaption || null,
           })
           .eq('id', editingId)
           .eq('user_id', user.id);
 
         if (error) throw error;
       } else {
-        // Criar novo
         const { data, error } = await supabase
           .from('disparos')
           .insert({
@@ -318,7 +448,10 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             mensagem: formData.mensagem,
             data_agendamento: formData.data,
             hora_agendamento: formData.hora,
-            status: 'agendado'
+            status: 'agendado',
+            media_url: mediaUrl || null,
+            media_type: formData.mediaType || null,
+            media_caption: formData.mediaCaption || null,
           })
           .select()
           .single();
@@ -327,16 +460,18 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
         disparoId = data.id;
       }
 
-      // Enviar para webhook
-      const success = await enviarWebhook('producao', disparoId!);
-
-      if (success || true) { // Sempre considera sucesso
-        toast({
-          title: "🎉 Disparo agendado!",
-          description: "Seu disparo foi agendado com sucesso. Verifique o n8n!",
-        });
-        onBack();
+      // Atualizar formData com a URL da mídia
+      if (mediaUrl) {
+        setFormData(prev => ({ ...prev, mediaUrl }));
       }
+
+      await enviarWebhook('producao', disparoId!);
+
+      toast({
+        title: "🎉 Disparo agendado!",
+        description: `Seu disparo${mediaUrl ? ' com mídia' : ''} foi agendado com sucesso!`,
+      });
+      onBack();
     } catch (error) {
       console.error('Erro ao agendar:', error);
       toast({
@@ -346,6 +481,7 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       });
     } finally {
       setLoading(false);
+      setUploadingMedia(false);
     }
   };
 
@@ -391,6 +527,88 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             </p>
           </div>
 
+          {/* ✅ NOVO: Seção de Mídia */}
+          <div className="border-t pt-4">
+            <Label>Mídia (Opcional)</Label>
+            <p className="text-sm text-gray-500 mb-3">
+              Adicione uma imagem, vídeo, áudio ou documento à sua mensagem
+            </p>
+
+            {!mediaFile && !mediaPreview && (
+              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors">
+                <input
+                  type="file"
+                  id="media-upload"
+                  className="hidden"
+                  accept="image/*,video/*,audio/*,.pdf,.doc,.docx"
+                  onChange={handleMediaSelect}
+                />
+                <label htmlFor="media-upload" className="cursor-pointer">
+                  <Upload className="w-12 h-12 mx-auto text-gray-400 mb-2" />
+                  <p className="text-sm text-gray-600">
+                    Clique para selecionar um arquivo
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Máximo 16MB • Imagem, vídeo, áudio ou documento
+                  </p>
+                </label>
+              </div>
+            )}
+
+            {(mediaFile || mediaPreview) && (
+              <div className="border rounded-lg p-4 bg-gray-50">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3 flex-1">
+                    {mediaPreview && formData.mediaType === 'image' ? (
+                      <img
+                        src={mediaPreview}
+                        alt="Preview"
+                        className="w-20 h-20 object-cover rounded"
+                      />
+                    ) : (
+                      <div className="w-20 h-20 bg-blue-100 rounded flex items-center justify-center">
+                        {formData.mediaType === 'image' && <Image className="w-8 h-8 text-blue-600" />}
+                        {formData.mediaType !== 'image' && <File className="w-8 h-8 text-blue-600" />}
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <p className="font-medium text-sm">
+                        {mediaFile?.name || 'Mídia carregada'}
+                      </p>
+                      <p className="text-xs text-gray-500 capitalize">
+                        {formData.mediaType || 'arquivo'}
+                        {mediaFile && ` • ${(mediaFile.size / 1024).toFixed(1)}KB`}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleRemoveMedia}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+
+                {/* Legenda da mídia */}
+                {formData.mediaType && (
+                  <div className="mt-3">
+                    <Label htmlFor="mediaCaption" className="text-xs">
+                      Legenda (opcional)
+                    </Label>
+                    <Input
+                      id="mediaCaption"
+                      placeholder="Adicione uma legenda para a mídia..."
+                      value={formData.mediaCaption}
+                      onChange={(e) => setFormData(prev => ({ ...prev, mediaCaption: e.target.value }))}
+                      className="mt-1"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label htmlFor="data">Data *</Label>
@@ -418,30 +636,30 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
         <Button 
           variant="outline" 
           onClick={handleEnviarTeste}
-          disabled={testLoading || !formData.mensagem}
+          disabled={testLoading || uploadingMedia || !formData.mensagem}
           className="border-orange-300 text-orange-700 hover:bg-orange-50"
         >
           <TestTube className="w-4 h-4 mr-2" />
-          {testLoading ? 'Enviando teste...' : 'Enviar Teste'}
+          {uploadingMedia ? 'Enviando mídia...' : testLoading ? 'Enviando teste...' : 'Enviar Teste'}
         </Button>
 
         <div className="flex gap-3">
           <Button 
             variant="outline" 
             onClick={handleSalvarRascunho}
-            disabled={loading}
+            disabled={loading || uploadingMedia}
           >
             <Save className="w-4 h-4 mr-2" />
-            Salvar Rascunho
+            {uploadingMedia ? 'Salvando mídia...' : 'Salvar Rascunho'}
           </Button>
           
           <Button 
             onClick={handleAgendar}
-            disabled={loading}
+            disabled={loading || uploadingMedia}
             className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
           >
             <Send className="w-4 h-4 mr-2" />
-            {loading ? 'Agendando...' : 'Agendar Disparo'}
+            {uploadingMedia ? 'Preparando mídia...' : loading ? 'Agendando...' : 'Agendar Disparo'}
           </Button>
         </div>
       </div>
