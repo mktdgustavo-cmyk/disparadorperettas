@@ -556,11 +556,12 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
         setFormData(prev => ({ ...prev, mediaUrl }));
       }
 
-      await enviarWebhook('producao', disparoId!);
+      // ✅ AGENDAMENTO INTERNO
+      // Não chama webhook aqui! A Edge Function processa automaticamente.
 
       toast({
         title: "🎉 Disparo agendado!",
-        description: `Seu disparo${mediaUrl ? ' com mídia' : ''} foi agendado com sucesso!`,
+        description: `Será enviado automaticamente em ${formData.data} às ${formData.hora}h`,
       });
       onBack();
     } catch (error) {
