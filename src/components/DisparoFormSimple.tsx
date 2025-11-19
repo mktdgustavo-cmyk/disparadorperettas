@@ -485,6 +485,33 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       let disparoId = editingId;
 
       if (editingId) {
+        // ✅ VERIFICAR SE JÁ FOI EXECUTADO ANTES DE ATUALIZAR
+        const { data: existingDisparo } = await supabase
+          .from('disparos')
+          .select('execution_status, status')
+          .eq('id', editingId)
+          .single();
+
+        if (existingDisparo?.execution_status === 'completed') {
+          toast({
+            title: "Disparo já executado",
+            description: "Este disparo já foi enviado e não pode ser reagendado.",
+            variant: "destructive",
+          });
+          setLoading(false);
+          return;
+        }
+
+        if (existingDisparo?.execution_status === 'processing') {
+          toast({
+            title: "Disparo em processamento",
+            description: "Este disparo está sendo processado. Aguarde a conclusão.",
+            variant: "destructive",
+          });
+          setLoading(false);
+          return;
+        }
+
         const { error } = await supabase
           .from('disparos')
           .update({
@@ -493,6 +520,7 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             data_agendamento: formData.data,
             hora_agendamento: formData.hora,
             status: 'agendado',
+            execution_status: 'pending', // ✅ Reset status de execução
             media_url: mediaUrl || null,
             media_type: formData.mediaType || null,
             media_caption: formData.mediaCaption || null,
@@ -511,6 +539,7 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
             data_agendamento: formData.data,
             hora_agendamento: formData.hora,
             status: 'agendado',
+            execution_status: 'pending', // ✅ Novo disparo começa como pending
             media_url: mediaUrl || null,
             media_type: formData.mediaType || null,
             media_caption: formData.mediaCaption || null,
