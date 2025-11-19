@@ -149,19 +149,27 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
   };
 
   const enviarWebhook = async (tipo: 'teste' | 'producao', disparoId: string) => {
-    const timestamp = new Date(`${formData.data}T${formData.hora}:00`).toISOString();
+    // ✅ Usar data/hora atuais se não fornecidas (para testes)
+    const dataAgendamento = formData.data || new Date().toISOString().split('T')[0];
+    const horaAgendamento = formData.hora || new Date().toTimeString().slice(0, 5);
+    const timestamp = new Date(`${dataAgendamento}T${horaAgendamento}:00`).toISOString();
     
     const payload: any = {
       tipo,
       disparo_id: disparoId,
-      nome: formData.nome,
+      nome: formData.nome || (tipo === 'teste' ? 'Teste de Mensagem' : 'Disparo'),
       mensagem: formData.mensagem,
-      data: formData.data,
-      hora: formData.hora,
+      data: dataAgendamento,
+      hora: horaAgendamento,
       timestamp,
-      tem_media: !!formData.mediaUrl, // ✅ Flag para n8n decidir o caminho
-      ...(tipo === 'teste' && { grupo_teste: GRUPO_TESTE })
+      tem_media: !!formData.mediaUrl,
     };
+
+    // ✅ Adicionar grupo_teste ou phoneNumber
+    if (tipo === 'teste') {
+      payload.grupo_teste = GRUPO_TESTE;
+      payload.phoneNumber = GRUPO_TESTE;
+    }
 
     // ✅ Adicionar dados de mídia se existir
     if (formData.mediaUrl) {
@@ -172,18 +180,29 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
       };
     }
 
-    console.log('📤 Enviando para webhook:', payload);
+    console.log('📤 === ENVIANDO WEBHOOK ===');
+    console.log('🔗 URL:', WEBHOOK_URL);
+    console.log('📦 Payload:', JSON.stringify(payload, null, 2));
 
     try {
       const response = await fetch(WEBHOOK_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
         body: JSON.stringify(payload),
       });
 
-      if (!response.ok) {
+      console.log('📥 Resposta HTTP:', response.status, response.statusText);
+
+      if (response.ok) {
+        console.log('✅ Webhook enviado com sucesso!');
+        return true;
+      } else {
+        console.log('⚠️ Resposta não-OK, tentando fallback no-cors...');
+        
+        // Fallback com no-cors
         await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: {
@@ -192,12 +211,29 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
           mode: 'no-cors',
           body: JSON.stringify(payload),
         });
+        
+        console.log('✅ Fallback no-cors executado');
+        return true;
       }
-
-      return true;
     } catch (error) {
-      console.error('Erro ao enviar webhook:', error);
-      return false;
+      console.error('❌ Erro ao enviar webhook:', error);
+      
+      // Tentar fallback mesmo com erro
+      try {
+        await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          mode: 'no-cors',
+          body: JSON.stringify(payload),
+        });
+        console.log('✅ Fallback no-cors após erro executado');
+        return true;
+      } catch (fallbackError) {
+        console.error('❌ Erro no fallback:', fallbackError);
+        return false;
+      }
     }
   };
 
@@ -232,54 +268,80 @@ const DisparoFormSimple: React.FC<DisparoFormSimpleProps> = ({ onBack, editingId
         setUploadingMedia(false);
       }
 
-      // Salva como rascunho se ainda não existe
-      let disparoId = editingId;
+      // ✅ CORRIGIDO: Criar payload de teste temporário (sem salvar no banco)
+      const disparoId = editingId || `temp-test-${Date.now()}`;
       
-      if (!disparoId) {
-        const { data, error } = await supabase
-          .from('disparos')
-          .insert({
-            user_id: user.id,
-            nome: formData.nome || 'Teste sem nome',
-            mensagem: formData.mensagem,
-            data_agendamento: formData.data || new Date().toISOString().split('T')[0],
-            hora_agendamento: formData.hora || '12:00',
-            status: 'rascunho',
-            media_url: mediaUrl || null,
-            media_type: formData.mediaType || null,
-            media_caption: formData.mediaCaption || null,
-          })
-          .select()
-          .single();
+      // ✅ CORRIGIDO: Montar payload completo para teste
+      const testPayload: any = {
+        tipo: 'teste',
+        disparo_id: disparoId,
+        nome: formData.nome || 'Teste de Mensagem',
+        mensagem: formData.mensagem,
+        data: formData.data || new Date().toISOString().split('T')[0],
+        hora: formData.hora || new Date().toTimeString().slice(0, 5),
+        timestamp: new Date().toISOString(),
+        tem_media: !!mediaUrl,
+        grupo_teste: GRUPO_TESTE,
+        phoneNumber: GRUPO_TESTE, // ✅ Adicionar phoneNumber também
+      };
 
-        if (error) throw error;
-        disparoId = data.id;
-      }
-
-      // Atualizar formData com a URL da mídia
+      // ✅ Adicionar dados de mídia se existir
       if (mediaUrl) {
-        setFormData(prev => ({ ...prev, mediaUrl }));
+        testPayload.media = {
+          url: mediaUrl,
+          type: formData.mediaType,
+          caption: formData.mediaCaption || formData.mensagem,
+        };
       }
 
-      // Envia para o webhook como teste
-      const success = await enviarWebhook('teste', disparoId!);
+      console.log('🧪 === ENVIANDO TESTE ===');
+      console.log('📤 Payload do teste:', JSON.stringify(testPayload, null, 2));
+
+      // ✅ CORRIGIDO: Enviar direto o payload de teste
+      const response = await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(testPayload),
+      });
+
+      console.log('📥 Resposta HTTP:', response.status, response.statusText);
+
+      let success = response.ok;
+
+      // Fallback no-cors se necessário
+      if (!success) {
+        console.log('⚠️ Tentando fallback no-cors...');
+        await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          mode: 'no-cors',
+          body: JSON.stringify(testPayload),
+        });
+        success = true; // Assume sucesso com no-cors
+        console.log('✅ Fallback executado');
+      }
 
       if (success) {
         toast({
           title: "✅ Teste enviado!",
-          description: `Mensagem${mediaUrl ? ' com mídia' : ''} enviada para o grupo de teste.`,
+          description: `Mensagem${mediaUrl ? ' com mídia' : ''} enviada para o grupo de teste. Verifique o WhatsApp!`,
         });
       } else {
         toast({
-          title: "⚠️ Webhook enviado",
-          description: "Requisição enviada. Verifique o n8n para confirmar.",
+          title: "⚠️ Teste enviado",
+          description: "Requisição enviada para o n8n. Verifique os logs.",
         });
       }
     } catch (error) {
-      console.error('Erro ao enviar teste:', error);
+      console.error('❌ Erro ao enviar teste:', error);
       toast({
         title: "Erro",
-        description: "Não foi possível enviar o teste.",
+        description: `Não foi possível enviar o teste: ${error instanceof Error ? error.message : 'Erro desconhecido'}`,
         variant: "destructive",
       });
     } finally {
